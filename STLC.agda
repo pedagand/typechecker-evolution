@@ -1,6 +1,6 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we use an inductive family to implement the bidirectional
+-- Where we use a few inductive families to implement the bidirectional
 -- syntax but we nonetheless fail to avoid a mutually-recursive
 -- definition of the type-checker because the termination checker is
 -- confused by the packing/unpacking of the `In` constructors.
@@ -36,13 +36,16 @@ do-bind = _>>=_
 
 
 infix 5 _⊢?_
+infix 5 _⊢C?_∋_
+infix 5 _!_⊢E?_
 infix 10 _∈
 infix 10 _∋_
 infix 20 _∈?_
+infix 25 _▹_
 infixr 30 _+_
 infixr 35 _*_
 infixr 40 _⇒_
-infixl 150 _▹_
+
 
 -- * Types
 
@@ -67,33 +70,47 @@ _         ≟ _          = False
 data dir : Set where
   ⇑ ⇓ : dir
 
+data can (T : Set) : Set where
+  tt        :               can T
+  pair      : (t₁ t₂ : T) → can T
+  lam       : (b : T)     → can T
+  ze        :               can T
+  su        : (t : T)     → can T
+  inj₁ inj₂ : (t : T)     → can T
+
+data elim (T : Set) : dir → Set where
+  apply   : (s : T)     → elim T ⇑
+  fst snd :               elim T ⇑
+  split   : (c₁ c₂ : T) → elim T ⇓
+
 data term : dir → Set  where
-  tt            :                                term ⇓
-  pair          : (t₁ t₂ : term ⇓)             → term ⇓
-  lam           : (b : term ⇓)                 → term ⇓
-  ze            :                                term ⇓
-  su            : (t : term ⇓)                 → term ⇓
-  inj₁ inj₂     : (t : term ⇓)                 → term ⇓
-  inv           : (t : term ⇑)                 → term ⇓
-  var           : (k : ℕ)                      → term ⇑
-  _#apply_      : (n : term ⇑)(s : term ⇓)     → term ⇑
-  _#fst _#snd   : (n : term ⇑)                 → term ⇑
-  _#split[_/_]  : (n : term ⇑)(c₁ c₂ : term ⇓) → term ⇓
-  [_:∋:_]       : (T : type)(t : term ⇓)       → term ⇑
+  C       : (c : can (term ⇓))                           → term ⇓
+  inv     : (t : term ⇑)                                 → term ⇓
+  var     : (k : ℕ)                                      → term ⇑
+  _#_     : ∀ {d} → (n : term ⇑)(args : elim (term ⇓) d) → term d
+  [_:∋:_] : (T : type)(t : term ⇓)                       → term ⇑
+
+pattern Ctt       = C tt
+pattern Cze       = C ze
+pattern Csu x     = C (su x)
+pattern Cpair x y = C (pair x y)
+pattern Clam b    = C (lam b)
+pattern Cinj₁ x   = C (inj₁ x)
+pattern Cinj₂ x   = C (inj₂ x)
 
 -- ** Tests
 
 true : term ⇓
-true = inj₁ tt
+true = Cinj₁ Ctt
 
 false : term ⇓
-false = inj₂ tt
+false = Cinj₂ Ctt
 
 t1 : term ⇓
-t1 = inv ([ nat ⇒ nat :∋: lam {- x -} (inv (var {- x -} 0)) ] #apply (su (su ze)))
+t1 = inv ([ nat ⇒ nat :∋: Clam {- x -} (inv (var {- x -} 0)) ] # apply (Csu (Csu Cze)))
 
 t2 : term ⇓
-t2 = lam {-x-} (var {- x -} 0 #split[ true / false ])
+t2 = Clam {-x-} (var {- x -} 0 # split true false)
 
 -- * Type-checking
 
@@ -110,65 +127,76 @@ suc n ∈? Γ ▹ T  = n ∈? Γ
 _=?=_ : type → type → Maybe ⊤
 A =?= B = if A ≟ B then return tt else ∅
 
-data In : dir → Set where
-  _∋_ : (T : type)(t : term ⇓) → In ⇓
-  _∈ : (t : term ⇑) → In ⇑
+data In (P : dir → Set) : dir → Set where
+  _∋_ : (T : type)(t : P ⇓) → In P ⇓
+  _∈ : (t : P ⇑) → In P ⇑
 
 Out : dir → Set
 Out ⇑ = type
 Out ⇓ = ⊤
 
 {-# TERMINATING #-}
-_⊢?_ : ∀ {d} → context → In d → Maybe (Out d)
-Γ ⊢? unit ∋ tt = return tt
-Γ ⊢? A * B ∋ pair t₁ t₂ =
-  do _ ← Γ ⊢? A ∋ t₁
-  -| _ ← Γ ⊢? B ∋ t₂
-  -| return tt
-Γ ⊢? A ⇒ B ∋ lam b =
-  do _ ← Γ ▹ A ⊢? B ∋ b
-  -| return tt
-Γ ⊢? nat ∋ ze =
-  return tt
-Γ ⊢? nat ∋ su n =
-  do _ ← Γ ⊢? nat ∋ n
-  -| return tt
-Γ ⊢? A + B ∋ inj₁ t =
-  do _ ← Γ ⊢? A ∋ t
-  -| return tt
-Γ ⊢? A + B ∋ inj₂ t =
-  do _ ← Γ ⊢? B ∋ t
-  -| return tt
+_⊢?_     : ∀ {d} → context → In term d → Maybe (Out d)
+_⊢C?_∋_  : context → type → can (term ⇓) → Maybe ⊤
+_!_⊢E?_  : ∀ {d} → context → type → In (elim (term ⇓)) d → Maybe (Out d)
+
+
+Γ ⊢? unit ∋ Ctt = return tt
+Γ ⊢? T ∋ C t = Γ ⊢C? T ∋ t
 Γ ⊢? T ∋ inv t =
   do T' ← (Γ ⊢? t ∈)
   -| T =?= T'
-Γ ⊢? A ∋ t #split[ t₁ / t₂ ] =
-    do T ← Γ ⊢? t ∈
-    -| return tt
-Γ ⊢? _ ∋ _ = ∅
-
+Γ ⊢? A ∋ f # e =
+  -- XXX: how to factorize with `Γ ⊢? f # e ∈`?
+  do T ← Γ ⊢? f ∈
+  -| Γ ! T ⊢E? A ∋ e
 
 Γ ⊢? var k ∈ = k ∈? Γ
-Γ ⊢? f #apply s ∈ =
+Γ ⊢? f # e ∈ = 
   do T ← Γ ⊢? f ∈
-  -| case T of λ {
-     (A ⇒ B) →
-       do _ ← Γ ⊢? A ∋ s
-       -| return B ;
-     _       → ∅ }
-Γ ⊢? p #fst ∈ =
-  do T ← Γ ⊢? p ∈
-  -| case T of λ {
-     (A * B) → return A ;
-     _       → ∅ }
-Γ ⊢? p #snd ∈ =
-  do T ← Γ ⊢? p ∈
-  -| case T of λ {
-     (A * B) → return B ;
-     _       → ∅ }
+  -| Γ ! T ⊢E? e ∈
 Γ ⊢? [ T :∋: t ] ∈ =
   do _ ← Γ ⊢? T ∋ t
   -| return T
+
+Γ ⊢C? A * B ∋ pair t₁ t₂ =
+  do _ ← Γ ⊢? A ∋ t₁
+  -| _ ← Γ ⊢? B ∋ t₂
+  -| return tt
+Γ ⊢C? A ⇒ B ∋ lam b =
+  do _ ← Γ ▹ A ⊢? B ∋ b
+  -| return tt
+Γ ⊢C? nat ∋ ze =
+  return tt
+Γ ⊢C? nat ∋ su n =
+  do _ ← Γ ⊢? nat ∋ n
+  -| return tt
+Γ ⊢C? A + B ∋ inj₁ t =
+  do _ ← Γ ⊢? A ∋ t
+  -| return tt
+Γ ⊢C? A + B ∋ inj₂ t =
+  do _ ← Γ ⊢? B ∋ t
+  -| return tt
+Γ ⊢C? T ∋ t = ∅
+
+Γ ! A ⇒ B ⊢E? apply s ∈ =
+  do _ ← Γ ⊢? A ∋ s
+  -| return B
+Γ ! A * B ⊢E? fst ∈ =
+  return A
+Γ ! A * B ⊢E? snd ∈ =
+  return B
+_ ! _ ⊢E? _ ∈ = ∅
+Γ ! nat ⊢E? A ∋ split c₁ c₂ =
+  do _ ← Γ ▹ A ⊢? A ∋ c₁
+  -| _ ← Γ ⊢? A ∋ c₂
+  -| return tt
+Γ ! X + Y ⊢E? A ∋ split c₁ c₂ =
+  do _ ← Γ ▹ X ⊢? A ∋ c₁
+  -| _ ← Γ ▹ Y ⊢? A ∋ c₂
+  -| return tt
+Γ ! _ ⊢E? _ ∋ _ = ∅
+
 
 -- ** Tests
 
