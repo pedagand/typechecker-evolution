@@ -1,7 +1,7 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we make sure that the typing derivations produced by the
--- typechecker correspond to the term fed to the typechecker.
+-- Where we make sure that failing to typecheck a term is justified by
+-- an "ill-typing judgment", which erases to the original term.
 
 open import Data.Empty
 open import Data.Unit hiding (_≟_)
@@ -313,21 +313,142 @@ bool∋false = well-typed ⊢false
 nat∋t1 : [] ⊢ nat ∋ t1
 nat∋t1 = well-typed ⊢t1
 
+-- * Ill-type system
+
+data Canonical {X} : type → can X → Set where
+  can-unit-tt   :               Canonical unit tt
+  can-nat-ze    :               Canonical nat ze
+  can-nat-su    : ∀ {a}       → Canonical nat (su a)
+  can-sum-inj₁  : ∀ {A B a}   → Canonical (A + B) (inj₁ a)
+  can-sum-inj₂  : ∀ {A B b}   → Canonical (A + B) (inj₂ b)
+  can-prod-pair : ∀ {A B a b} → Canonical (A * B) (pair a b)
+
+data IsProduct : type → Set where
+  is-product : ∀ {A B} → IsProduct (A * B)
+
+data IsArrow : type → Set where
+  is-arrow : ∀ {A B} → IsArrow (A ⇒ B)
+
+data IsSplit : type → Set where
+  is-split-nat :           IsSplit nat
+  is-split-sum : ∀ {A B} → IsSplit (A + B)
+
+mtype : dir → Set
+mtype ⇑ = ⊤
+mtype ⇓ = type
+
+data _B⊬[_]_ (Γ : context) : (d : dir) → mtype d → Set where
+  not-canonical : ∀ {c : can (term ⇓)}{T} →
+
+      ¬ Canonical T c
+    → ---------------
+      Γ B⊬[ ⇓ ] T
+
+  unsafe-inv : ∀ {A B} →
+
+      Γ ⊢[ ⇑ ] A → A ≢ B
+    → -------------------
+      Γ B⊬[ ⇓ ] B
+
+  bad-split : ∀ {A B}{c₁ c₂ : term ⇓} →
+
+      Γ ⊢[ ⇑ ] A  → ¬ IsSplit A
+    → -------------------------
+      Γ B⊬[ ⇓ ] B
+
+  out-of-scope : ∀ {x : ℕ} →
+
+      x ≥ length Γ
+    → ------------
+      Γ B⊬[ ⇑ ] _
+
+  bad-function : ∀ {T}{s : term ⇓} →
+
+      Γ ⊢[ ⇑ ] T → ¬ IsArrow T
+    → ------------------------
+      Γ B⊬[ ⇑ ] _
+
+  bad-fst : ∀ {T} →
+
+      Γ ⊢[ ⇑ ] T → ¬ IsProduct T
+    → --------------------------
+      Γ B⊬[ ⇑ ] _
+
+  bad-snd : ∀ {T} →
+
+      Γ ⊢[ ⇑ ] T → ¬ IsProduct T
+    → --------------------------
+      Γ B⊬[ ⇑ ] _
+
+-- TODO: automate this "trisection & free monad" construction by meta-programming
+-- see: "The gentle art of levitation", Chapman et al. for the free monad
+-- see: "Clowns to the left of me, jokers to the right", McBride for the dissection
+mutual
+  data _C⊬[_]_ : context → (d : dir) → mtype d → Set where
+    lam   : ∀ {Γ A B} → Γ ▹ A ⊬[ ⇓ ] B           → Γ C⊬[ ⇓ ] A ⇒ B
+    su    : ∀ {Γ} → Γ ⊬[ ⇓ ] nat                 → Γ C⊬[ ⇓ ] nat
+    inj₁  : ∀ {Γ A B} → Γ ⊬[ ⇓ ] A               → Γ C⊬[ ⇓ ] A + B
+    inj₂  : ∀ {Γ A B} → Γ ⊬[ ⇓ ] B               → Γ C⊬[ ⇓ ] A + B
+    pair₁ : ∀ {Γ A B} → Γ ⊬[ ⇓ ] A → term ⇓      → Γ C⊬[ ⇓ ] A * B
+    pair₂ : ∀ {Γ A B} → Γ ⊢[ ⇓ ] A → Γ ⊬[ ⇓ ] B  → Γ C⊬[ ⇓ ] A * B
+
+  data _E⊬[_]_↝_ : context → (d : dir) → type → mtype d → Set where
+    apply : ∀ {Γ A B} → Γ ⊬[ ⇓ ] A                        → Γ E⊬[ ⇑ ] A ⇒ B ↝ _
+    iter₁ : ∀ {Γ T} → Γ ▹ T ⊬[ ⇓ ] T → term ⇓             → Γ E⊬[ ⇓ ] nat ↝ T
+    iter₂ : ∀ {Γ T} → Γ ▹ T ⊢[ ⇓ ] T → Γ ⊬[ ⇓ ] T         → Γ E⊬[ ⇓ ] nat ↝ T
+    case₁ : ∀ {Γ A B C} → Γ ▹ A ⊬[ ⇓ ] C → term ⇓         → Γ E⊬[ ⇓ ] A + B ↝ C
+    case₂ : ∀ {Γ A B C} → Γ ▹ A ⊢[ ⇓ ] C → Γ ▹ B ⊬[ ⇓ ] C → Γ E⊬[ ⇓ ] A + B ↝ C
+
+  data _⊬[_]_ : context → (d : dir) → mtype d → Set where
+    because  : ∀ {Γ d T} → Γ B⊬[ d ] T                    → Γ ⊬[ d ] T
+    C        : ∀ {Γ d T} → Γ C⊬[ d ] T                    → Γ ⊬[ d ] T
+    inv      : ∀ {Γ T} → Γ ⊬[ ⇑ ] _                       → Γ ⊬[ ⇓ ] T
+    _#₁_     : ∀ {Γ d T} → Γ ⊬[ ⇑ ] _ → elim (term ⇓) d   → Γ ⊬[ d ] T
+    _#₂_     : ∀ {Γ d I O} → Γ ⊢[ ⇑ ] I → Γ E⊬[ d ] I ↝ O → Γ ⊬[ d ] O
+    [_:∋:_]  : ∀ {Γ} → (T : type) → Γ ⊬[ ⇓ ] T            → Γ ⊬[ ⇑ ] _
+
+instance
+  BTermRaw : ∀ {Γ d T} → Γ B⊬[ d ] T ↪ term d
+  ⌊_⌋ {{BTermRaw}} (not-canonical {c} x) = C c
+  ⌊_⌋ {{BTermRaw}} (unsafe-inv q _)      = inv ⌊ q ⌋
+  ⌊_⌋ {{BTermRaw}} (bad-split {c₁        = c₁} {c₂} t _) = ⌊ t ⌋ # split c₁ c₂
+  ⌊_⌋ {{BTermRaw}} (out-of-scope {x} _)  = var x
+  ⌊_⌋ {{BTermRaw}} (bad-function {s      = s} f _) = ⌊ f ⌋ # apply s
+  ⌊_⌋ {{BTermRaw}} (bad-fst p _)         = ⌊ p ⌋ # fst
+  ⌊_⌋ {{BTermRaw}} (bad-snd p _)         = ⌊ p ⌋ # snd
+
+  ETermRaw : ∀ {Γ d T} → Γ ⊬[ d ] T ↪ term d
+  ⌊_⌋ {{ETermRaw}} (because e)        = ⌊ e ⌋
+  ⌊_⌋ {{ETermRaw}} (C (lam b))        = C (lam ⌊ b ⌋)
+  ⌊_⌋ {{ETermRaw}} (C (su t))         = C (su ⌊ t ⌋)
+  ⌊_⌋ {{ETermRaw}} (C (inj₁ t))       = C (inj₁ ⌊ t ⌋)
+  ⌊_⌋ {{ETermRaw}} (C (inj₂ t))       = C (inj₂ ⌊ t ⌋)
+  ⌊_⌋ {{ETermRaw}} (C (pair₁ t₁ t₂))  = C (pair ⌊ t₁ ⌋ t₂)
+  ⌊_⌋ {{ETermRaw}} (C (pair₂ t₁ t₂))  = C (pair ⌊ t₁ ⌋ ⌊ t₂ ⌋)
+  ⌊_⌋ {{ETermRaw}} (inv t)            = inv ⌊ t ⌋
+  ⌊_⌋ {{ETermRaw}} [ T :∋: t ]        = [ T :∋: ⌊ t ⌋ ]
+  ⌊_⌋ {{ETermRaw}} (t #₁ e)           = ⌊ t ⌋ # e
+  ⌊_⌋ {{ETermRaw}} (t #₂ apply x)     = ⌊ t ⌋ # apply ⌊ x ⌋
+  ⌊_⌋ {{ETermRaw}} (t #₂ iter₁ fs fz) = ⌊ t ⌋ # split ⌊ fs ⌋ fz
+  ⌊_⌋ {{ETermRaw}} (t #₂ iter₂ fs fz) = ⌊ t ⌋ # split ⌊ fs ⌋ ⌊ fz ⌋
+  ⌊_⌋ {{ETermRaw}} (t #₂ case₁ cX cY) = ⌊ t ⌋ # split ⌊ cX ⌋ cY
+  ⌊_⌋ {{ETermRaw}} (t #₂ case₂ cX cY) = ⌊ t ⌋ # split ⌊ cX ⌋ ⌊ cY ⌋
+
 -- * Type-checking
 
 -- ** View on variable lookup
 
 data _∈-view_ : ℕ → context → Set where
   yes : ∀ {T Γ} → (x : T ∈ Γ)  → ⌊ x ⌋ ∈-view Γ
-  no  : ∀ {Γ n} → n ∈-view Γ
+  no  : ∀ {Γ n} → n ≥ length Γ → n ∈-view Γ
 
 _∈?_ : ∀ n Γ → n ∈-view Γ
-_     ∈? ε      = no
+_     ∈? ε      = no z≤n
 zero  ∈? Γ ▹ T  = yes here
 suc n ∈? Γ ▹ T
   with n ∈? Γ
 ... | yes t     = yes (there t)
-... | no        = no
+... | no q      = no (s≤s q)
 
 -- ** View on typing
 
@@ -340,21 +461,25 @@ instance
   ⌊_⌋ {{DirRaw {d = ⇑}}} e    = ⌊ e ⌋ ∈
   ⌊_⌋ {{DirRaw {d = ⇓}{T}}} e = T ∋ ⌊ e ⌋
 
+  EDirRaw : ∀ {Γ d T} → Γ ⊬[ d ] T ↪ Dir d
+  ⌊_⌋ {{EDirRaw {d = ⇑}}} e    = ⌊ e ⌋ ∈
+  ⌊_⌋ {{EDirRaw {d = ⇓}{T}}} e = T ∋ ⌊ e ⌋
+
 data _⊢[_]-view_ (Γ : context)(d : dir) : Dir d → Set where
   yes : ∀ {T} (Δ : Γ ⊢[ d ] T)   → Γ ⊢[ d ]-view ⌊ Δ ⌋
-  no  : ∀ {t}                    → Γ ⊢[ d ]-view t
+  no  : ∀ {T} (¬Δ : Γ ⊬[ d ] T)  → Γ ⊢[ d ]-view ⌊ ¬Δ ⌋
 
 isYes : ∀ {Γ T t} → Γ ⊢[ ⇓ ]-view T ∋ t → Set
 isYes (yes Δ) = ⊤
-isYes no      = ⊥
+isYes (no ¬Δ) = ⊥
 
 lemma : ∀ {Γ T t} → (pf : Γ ⊢[ ⇓ ]-view T ∋ t) → isYes pf → Γ ⊢ T ∋ t
 lemma (yes Δ) tt = well-typed Δ
-lemma no ()
+lemma (no _) ()
 
 -- XXX: Mutually-recursive to please the termination checker
-_⊢?_∋_  : (Γ : context)(T : type)(t : term ⇓) → Γ ⊢[ ⇓ ]-view T ∋ t
-_⊢?_∈   : (Γ : context)(t : term ⇑) → Γ ⊢[ ⇑ ]-view t ∈
+_⊢?_∋_ : (Γ : context)(T : type)(t : term ⇓) → Γ ⊢[ ⇓ ]-view T ∋ t
+_⊢?_∈  : (Γ : context)(t : term ⇑) → Γ ⊢[ ⇑ ]-view t ∈
 
 _⊢?_∋C_ : (Γ : context)(T : type)(t : can (term ⇓)) → Γ ⊢[ ⇓ ]-view T ∋ C t
 
@@ -362,91 +487,126 @@ _!_∋_⊢?_∋#_  : (Γ : context)(I : type)(Δt : Γ ⊢[ ⇑ ] I)(T : type)(e
 _!_∋_⊢?_∈#   : (Γ : context)(T : type)(Δt : Γ ⊢[ ⇑ ] T)(e : elim (term ⇓) ⇑) → Γ ⊢[ ⇑ ]-view (⌊ Δt ⌋ # e) ∈
 
 
-Γ ⊢? T ∋ C t      = Γ ⊢? T ∋C t
+Γ ⊢? T ∋ C t      = Γ ⊢? T ∋C t 
 Γ ⊢? T ∋ inv t
   with Γ ⊢? t ∈
-... | no          = no
+... | no ¬Δ       = no (inv ¬Δ)
 ... | yes {T'} Δ
     with T' ≟ T
 ... | yes refl    = yes (inv Δ)
-... | no ¬p       = no
+... | no ¬p       = no (because (unsafe-inv Δ ¬p))
 Γ ⊢? A ∋ t # e
   with Γ ⊢? t ∈
-... | no          = no
-... | yes {T} Δ   = Γ ! T ∋ Δ ⊢? A ∋# e
+... | no ¬Δt      = no (¬Δt #₁ e)
+... | yes {T} Δt  = Γ ! T ∋ Δt ⊢? A ∋# e 
 
 
 Γ ⊢? var k ∈
   with k ∈? Γ
-... | yes x       = yes (var x)
-... | no          = no
-Γ ⊢? f # e ∈
-  with Γ ⊢? f ∈
-... | yes {T} Δ   = Γ ! T ∋ Δ ⊢? e ∈#
-... | no          = no
+... | yes x      = yes (var x)
+... | no ¬q      = no (because (out-of-scope ¬q))
+Γ ⊢? t # e ∈ 
+  with Γ ⊢? t ∈
+... | no ¬Δt     = no (¬Δt #₁ e)
+... | yes {T} Δt = Γ ! T ∋ Δt ⊢? e ∈#
 Γ ⊢? [ T :∋: t ] ∈
   with Γ ⊢? T ∋ t
-... | yes Δ       = yes [ T :∋: Δ by refl ]
-... | no          = no
+... | yes Δt     = yes [ T :∋: Δt by refl ]
+... | no ¬Δt     = no [ T :∋: ¬Δt ]
 
 
-Γ ⊢? unit ∋C tt  = yes (C tt)
-Γ ⊢? unit ∋C _   = no
+Γ ⊢? unit ∋C tt       = yes (C tt)
+Γ ⊢? unit ∋C pair _ _ = no (because (not-canonical (λ {()})))
+Γ ⊢? unit ∋C lam _    = no (because (not-canonical (λ {()})))
+Γ ⊢? unit ∋C ze       = no (because (not-canonical (λ {()})))
+Γ ⊢? unit ∋C su _     = no (because (not-canonical (λ {()})))
+Γ ⊢? unit ∋C inj₁ _   = no (because (not-canonical (λ {()})))
+Γ ⊢? unit ∋C inj₂ _   = no (because (not-canonical (λ {()})))
 
 Γ ⊢? A * B ∋C pair t₁ t₂
   with Γ ⊢? A ∋ t₁ | Γ ⊢? B ∋ t₂
-... | yes Δ₁ | yes Δ₂  = no
-... | yes Δ₁ | no      = no
-... | no     | _       = no
-Γ ⊢? A * B ∋C _        = no
+... | yes Δ₁ | yes Δ₂ = yes (C (pair Δ₁ Δ₂))
+... | yes Δ₁ | no ¬Δ₂ = no (C (pair₂ Δ₁ ¬Δ₂))
+... | no ¬Δ₁ | _      = no (C (pair₁ ¬Δ₁ t₂))
+Γ ⊢? A * B ∋C tt      = no (because (not-canonical (λ {()})))
+Γ ⊢? A * B ∋C lam _   = no (because (not-canonical (λ {()})))
+Γ ⊢? A * B ∋C ze      = no (because (not-canonical (λ {()})))
+Γ ⊢? A * B ∋C su _    = no (because (not-canonical (λ {()})))
+Γ ⊢? A * B ∋C inj₁ _  = no (because (not-canonical (λ {()})))
+Γ ⊢? A * B ∋C inj₂ _  = no (because (not-canonical (λ {()})))
 
 Γ ⊢? A ⇒ B ∋C lam b
   with Γ ▹ A ⊢? B ∋ b
-... | yes Δ      = yes (C (lam Δ))
-... | no         = no
-Γ ⊢? A ⇒ B ∋C _  = no
+... | yes Δ            = yes (C (lam Δ))
+... | no ¬Δ            = no (C (lam ¬Δ))
+Γ ⊢? A ⇒ B ∋C tt       = no (because (not-canonical (λ {()})))
+Γ ⊢? A ⇒ B ∋C ze       = no (because (not-canonical (λ {()})))
+Γ ⊢? A ⇒ B ∋C su x     = no (because (not-canonical (λ {()})))
+Γ ⊢? A ⇒ B ∋C pair _ _ = no (because (not-canonical (λ {()})))
+Γ ⊢? A ⇒ B ∋C inj₁ _   = no (because (not-canonical (λ {()})))
+Γ ⊢? A ⇒ B ∋C inj₂ _   = no (because (not-canonical (λ {()})))
 
-Γ ⊢? nat ∋C ze  = yes (C ze)
+Γ ⊢? nat ∋C ze       = yes (C ze)
 Γ ⊢? nat ∋C su n
   with Γ ⊢? nat ∋ n
-... | yes Δ     = yes (C (su Δ))
-... | no        = no
-Γ ⊢? nat ∋C _   = no
+... | yes Δ          = yes (C (su Δ))
+... | no ¬Δ          = no (C (su ¬Δ))
+Γ ⊢? nat ∋C tt       = no (because (not-canonical (λ {()})))
+Γ ⊢? nat ∋C pair _ _ = no (because (not-canonical (λ {()})))
+Γ ⊢? nat ∋C lam _    = no (because (not-canonical (λ {()})))
+Γ ⊢? nat ∋C inj₁ _   = no (because (not-canonical (λ {()})))
+Γ ⊢? nat ∋C inj₂ _   = no (because (not-canonical (λ {()})))
 
 Γ ⊢? A + B ∋C inj₁ t
   with Γ ⊢? A ∋ t
-... | yes Δ      = yes (C (inj₁ Δ))
-... | no         = no
+... | yes Δ            = yes (C (inj₁ Δ))
+... | no ¬Δ            = no (C (inj₁ ¬Δ))
 Γ ⊢? A + B ∋C inj₂ t
   with Γ ⊢? B ∋ t
-... | yes Δ      = yes (C (inj₂ Δ))
-... | no         = no
-Γ ⊢? A + B ∋C _  = no
+... | yes Δ            = yes (C (inj₂ Δ))
+... | no ¬Δ            = no (C (inj₂ ¬Δ))
+Γ ⊢? A + B ∋C  tt      = no (because (not-canonical (λ {()})))
+Γ ⊢? A + B ∋C pair _ _ = no (because (not-canonical (λ {()})))
+Γ ⊢? A + B ∋C lam _    = no (because (not-canonical (λ {()})))
+Γ ⊢? A + B ∋C ze       = no (because (not-canonical (λ {()})))
+Γ ⊢? A + B ∋C su _     = no (because (not-canonical (λ {()})))
 
 
 Γ ! nat ∋ Δt ⊢? A ∋# split fs fz
-  with Γ ▹ A ⊢? A ∋ fs | Γ ⊢? A ∋ fz
-... | yes Δfs | yes Δfz      = yes (Δt # iter Δfs Δfz)
-... | yes Δfs | no           = no
-... | no      | _            = no
-Γ ! X + Y ∋ Δt ⊢? A ∋# split cX cY
+    with Γ ▹ A ⊢? A ∋ fs | Γ ⊢? A ∋ fz
+... | yes Δfs | yes Δfz           = yes (Δt # iter Δfs Δfz)
+... | yes Δfs | no ¬Δfz           = no (Δt #₂ iter₂ Δfs ¬Δfz)
+... | no ¬Δfs | _                 = no (Δt #₂ iter₁ ¬Δfs fz)
+Γ ! X + Y ∋ Δt ⊢? A ∋# split cX cY 
   with (X ∷ Γ) ⊢? A ∋ cX | (Y ∷ Γ) ⊢? A ∋ cY
-... | yes ΔcX | yes ΔcY      = yes (Δt # case ΔcX ΔcY)
-... | yes ΔcX | no           = no
-... | no      | _            = no
-Γ ! _ ∋ _ ⊢? _ ∋# split _ _  = no
+... | yes ΔcX | yes ΔcY           = yes (Δt # case ΔcX ΔcY)
+... | yes ΔcX | no ¬ΔcY           = no (Δt #₂ case₂ ΔcX ¬ΔcY)
+... | no ¬ΔcX | _                 = no (Δt #₂ case₁ ¬ΔcX cY)
+Γ ! unit ∋ Δt ⊢? A ∋# split _ _   = no (because (bad-split Δt (λ {()})))
+Γ ! _ ⇒ _ ∋ Δt ⊢? A ∋# split _ _  = no (because (bad-split Δt (λ {()})))
+Γ ! _ * _ ∋ Δt ⊢? A ∋# split _ _  = no (because (bad-split Δt (λ {()})))
 
-Γ ! A ⇒ B ∋ Δf ⊢? apply s ∈#
-  with Γ ⊢? A ∋ s
-... | yes Δs             = yes (Δf # apply Δs)
-... | no                 = no
-Γ ! _ ∋ _ ⊢? apply _ ∈#  = no
 
-Γ ! A * B ∋ Δ ⊢? fst ∈#  = yes (Δ # fst)
-Γ ! _ ∋ _ ⊢? fst ∈#      = no
+Γ ! A ⇒ B ∋ Δf ⊢? apply s ∈# 
+    with Γ ⊢? A ∋ s
+... | yes Δs                  = yes (Δf # apply Δs)
+... | no ¬Δs                  = no (Δf #₂ apply ¬Δs)
+Γ ! unit ∋ Δf ⊢? apply _ ∈#   = no (because (bad-function Δf λ {()}))
+Γ ! nat ∋ Δf ⊢? apply _ ∈#    = no (because (bad-function Δf λ {()}))
+Γ ! _ + _ ∋ Δf ⊢? apply _ ∈#  = no (because (bad-function Δf λ {()}))
+Γ ! _ * _ ∋ Δf ⊢? apply _ ∈#  = no (because (bad-function Δf λ {()}))
 
-Γ ! A * B ∋ Δ ⊢? snd ∈#  = yes (Δ # snd)
-Γ ! _ ∋ _ ⊢? snd ∈#      = no
+Γ ! A * B ∋ Δp ⊢? fst ∈#  = yes (Δp # fst)
+Γ ! unit ∋ Δp ⊢? fst ∈#   = no (because (bad-fst Δp (λ {()})))
+Γ ! nat ∋ Δp ⊢? fst ∈#    = no (because (bad-fst Δp (λ {()})))
+Γ ! _ + _ ∋ Δp ⊢? fst ∈#  = no (because (bad-fst Δp (λ {()})))
+Γ ! _ ⇒ _ ∋ Δp ⊢? fst ∈#  = no (because (bad-fst Δp (λ {()})))
+
+Γ ! A * B ∋ Δp ⊢? snd ∈#  = yes (Δp # snd)
+Γ ! unit ∋ Δp ⊢? snd ∈#   = no (because (bad-snd Δp (λ {()})))
+Γ ! nat ∋ Δp ⊢? snd ∈#    = no (because (bad-snd Δp (λ {()})))
+Γ ! _ + _ ∋ Δp ⊢? snd ∈#  = no (because (bad-snd Δp (λ {()})))
+Γ ! _ ⇒ _ ∋ Δp ⊢? snd ∈#  = no (because (bad-snd Δp (λ {()})))
 
 -- ** Tests
 
