@@ -1,6 +1,6 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we write Haskell98 on a bidirectional syntax.
+-- Where we use an inductive family to implement the bidirectional syntax.
 
 open import Data.Empty
 open import Data.Unit hiding (_≟_)
@@ -60,35 +60,35 @@ _         ≟ _          = False
 
 -- * Syntax of terms
 
-mutual
-  data term⇓ : Set where
-    tt            :                              term⇓
-    pair          : (t₁ t₂ : term⇓)            → term⇓
-    lam           : (b : term⇓)                → term⇓
-    ze            :                              term⇓
-    su            : (t : term⇓)                → term⇓
-    inj₁ inj₂     : (t : term⇓)                → term⇓
-    inv           : (t : term⇑)                → term⇓
-    _#split[_/_]  : (n : term⇑)(c₁ c₂ : term⇓) → term⇓
+data dir : Set where
+  ⇑ ⇓ : dir
 
-  data term⇑ : Set where
-    var           : (k : ℕ)                → term⇑
-    _#apply_      : (n : term⇑)(s : term⇓) → term⇑
-    _#fst _#snd   : (n : term⇑)            → term⇑
-    [_:∋:_]       : (T : type)(t : term⇓)  → term⇑
+data term : dir → Set  where
+  tt            :                                term ⇓
+  pair          : (t₁ t₂ : term ⇓)             → term ⇓
+  lam           : (b : term ⇓)                 → term ⇓
+  ze            :                                term ⇓
+  su            : (t : term ⇓)                 → term ⇓
+  inj₁ inj₂     : (t : term ⇓)                 → term ⇓
+  inv           : (t : term ⇑)                 → term ⇓
+  var           : (k : ℕ)                      → term ⇑
+  _#apply_      : (n : term ⇑)(s : term ⇓)     → term ⇑
+  _#fst _#snd   : (n : term ⇑)                 → term ⇑
+  _#split[_/_]  : (n : term ⇑)(c₁ c₂ : term ⇓) → term ⇓
+  [_:∋:_]       : (T : type)(t : term ⇓)       → term ⇑
 
 -- ** Tests
 
-true : term⇓
+true : term ⇓
 true = inj₁ tt
 
-false : term⇓
+false : term ⇓
 false = inj₂ tt
 
-t1 : term⇓
+t1 : term ⇓
 t1 = inv ([ nat ⇒ nat :∋: lam {- x -} (inv (var {- x -} 0)) ] #apply (su (su ze)))
 
-t2 : term⇓
+t2 : term ⇓
 t2 = lam {-x-} (var {- x -} 0 #split[ true / false ])
 
 -- * Type-checking
@@ -106,8 +106,9 @@ suc n ∈? Γ ▹ T  = n ∈? Γ
 _=?=_ : type → type → Maybe ⊤
 A =?= B = if A ≟ B then return tt else ∅
 
-_⊢?_∋_ : context → type → term⇓ → Maybe ⊤
-_⊢?_∈  : context → term⇑ → Maybe type
+-- XXX: Mutually-recursive to please the termination checker
+_⊢?_∋_ : context → type → term ⇓ → Maybe ⊤
+_⊢?_∈  : context → term ⇑ → Maybe type
 
 Γ ⊢? unit ∋ tt = return tt
 Γ ⊢? A * B ∋ pair t₁ t₂ =
