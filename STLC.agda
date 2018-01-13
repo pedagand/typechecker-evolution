@@ -1,6 +1,9 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we use an inductive family to implement the bidirectional syntax.
+-- Where we use an inductive family to implement the bidirectional
+-- syntax but we nonetheless fail to avoid a mutually-recursive
+-- definition of the type-checker because the termination checker is
+-- confused by the packing/unpacking of the `In` constructors.
 
 open import Data.Empty
 open import Data.Unit hiding (_≟_)
@@ -32,8 +35,9 @@ do-bind = _>>=_
 -- </XXX>
 
 
-infix 5 _⊢?_∋_
-infix 5 _⊢?_∈
+infix 5 _⊢?_
+infix 10 _∈
+infix 10 _∋_
 infix 20 _∈?_
 infixr 30 _+_
 infixr 35 _*_
@@ -106,10 +110,16 @@ suc n ∈? Γ ▹ T  = n ∈? Γ
 _=?=_ : type → type → Maybe ⊤
 A =?= B = if A ≟ B then return tt else ∅
 
--- XXX: Mutually-recursive to please the termination checker
-_⊢?_∋_ : context → type → term ⇓ → Maybe ⊤
-_⊢?_∈  : context → term ⇑ → Maybe type
+data In : dir → Set where
+  _∋_ : (T : type)(t : term ⇓) → In ⇓
+  _∈ : (t : term ⇑) → In ⇑
 
+Out : dir → Set
+Out ⇑ = type
+Out ⇓ = ⊤
+
+{-# TERMINATING #-}
+_⊢?_ : ∀ {d} → context → In d → Maybe (Out d)
 Γ ⊢? unit ∋ tt = return tt
 Γ ⊢? A * B ∋ pair t₁ t₂ =
   do _ ← Γ ⊢? A ∋ t₁
