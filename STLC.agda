@@ -1,31 +1,21 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we use a type family to encode the type system and the
--- typechecker produces such typing witnesses
+-- Where we make sure that the typing derivations produced by the
+-- typechecker correspond to the term fed to the typechecker.
 
 open import Data.Empty
 open import Data.Unit hiding (_≟_)
-open import Data.Maybe
-open import Data.Maybe.Categorical renaming (monad to monadMaybe)
 open import Data.List hiding ([_])
 open import Data.Nat hiding (_*_ ; _+_ ; _≟_)
 open import Data.Product
-
-open import Level
-open import Function hiding (_∋_)
 
 open import Relation.Nullary
 open import Relation.Binary hiding (_⇒_)
 open import Relation.Binary.PropositionalEquality hiding ([_])
 
-open import Category.Monad
-open RawMonad {{...}}
-
-instance MonadMaybe = monadMaybe
-
 infix 5 _⊢?_∋_
 infix 5 _⊢?_∈
-infix 20 _∈?_
+infix 19 _↪_
 infixr 30 _+_
 infixr 35 _*_
 infixr 40 _⇒_
@@ -272,113 +262,196 @@ mutual
 ⊢t1 = inv ([ (nat ⇒ nat) :∋: (C (lam (inv (var here)))) by refl ]
           # (apply (C (su (C (su (C ze)))))))
 
+-- * Relating typing and terms
+
+record _↪_ (S T : Set) : Set where
+  field
+    ⌊_⌋ : S → T
+
+open _↪_ {{...}} public
+
+instance
+  VarRaw : ∀ {T Γ} → T ∈ Γ ↪ ℕ
+  ⌊_⌋ {{ VarRaw }} here      = zero
+  ⌊_⌋ {{ VarRaw }} (there x) = suc ⌊ x ⌋
+
+  OTermRaw : ∀ {Γ T d} → Γ ⊢[ d ] T ↪ term d
+  ⌊_⌋ {{OTermRaw}} (C (lam b))         = C (lam ⌊ b ⌋)
+  ⌊_⌋ {{OTermRaw}} (C tt)              = C tt
+  ⌊_⌋ {{OTermRaw}} (C ze)              = C ze
+  ⌊_⌋ {{OTermRaw}} (C (su t))          = C (su ⌊ t ⌋)
+  ⌊_⌋ {{OTermRaw}} (C (inj₁ t))        = C (inj₁ ⌊ t ⌋)
+  ⌊_⌋ {{OTermRaw}} (C (inj₂ t))        = C (inj₂ ⌊ t ⌋)
+  ⌊_⌋ {{OTermRaw}} (C (pair t₁ t₂))    = C (pair ⌊ t₁ ⌋ ⌊ t₂ ⌋)
+  ⌊_⌋ {{OTermRaw}} (inv t)             = inv ⌊ t ⌋
+  ⌊_⌋ {{OTermRaw}} (var x)             = var ⌊ x ⌋
+  ⌊_⌋ {{OTermRaw}} (f # (apply s))     = ⌊ f ⌋ # apply ⌊ s ⌋
+  ⌊_⌋ {{OTermRaw}} (p # fst)           = ⌊ p ⌋ # fst
+  ⌊_⌋ {{OTermRaw}} (p # snd)           = ⌊ p ⌋ # snd
+  ⌊_⌋ {{OTermRaw}} (t # case x y)      = ⌊ t ⌋ # split ⌊ x ⌋ ⌊ y ⌋
+  ⌊_⌋ {{OTermRaw}} (t # iter fs fz)    = ⌊ t ⌋ # split ⌊ fs ⌋ ⌊ fz ⌋
+  ⌊_⌋ {{OTermRaw}} [ T :∋: t by refl ] = [ T :∋: ⌊ t ⌋ ]
+
+data _⊢_∋_ (Γ : context)(T : type){d} : term d → Set where
+  well-typed : (Δ : Γ ⊢[ d ] T ) → Γ ⊢ T ∋ ⌊ Δ ⌋
+
+-- TODO: one could prove that `Γ ⊢ T ∋ t` is H-prop when `t : term ⇓`, ie. we have
+--     lemma-proof-irr : ∀ {Γ T}{t : term ⇓} → ∀ (pf₁ pf₂ : Γ ⊢ T ∋ t) → → pf₁ ≅ pf₂
+-- but this requires proving that `⌊_⌋` is injective.
+
+-- TODO: conversely, one should be able to prove that `Γ ⊢ T ∋ t` is
+-- equivalent to `type` when `t : term ⇑` but I haven't tried.
+
+-- ** Tests
+
+bool∋true : [] ⊢ bool ∋ true
+bool∋true = well-typed ⊢true
+
+bool∋false : [] ⊢ bool ∋ false
+bool∋false = well-typed ⊢false
+
+nat∋t1 : [] ⊢ nat ∋ t1
+nat∋t1 = well-typed ⊢t1
+
 -- * Type-checking
 
-_∈?_ : ℕ → (Γ : context) → Maybe (Σ[ T ∈ type ] T ∈ Γ)
-_     ∈? ε      = nothing
-zero  ∈? Γ ▹ T  = return (T , here)
-suc n ∈? Γ ▹ T  = do (T' , t) ← n ∈? Γ
-                     return (T' , there t)
+-- ** View on variable lookup
+
+data _∈-view_ : ℕ → context → Set where
+  yes : ∀ {T Γ} → (x : T ∈ Γ)  → ⌊ x ⌋ ∈-view Γ
+  no  : ∀ {Γ n} → n ∈-view Γ
+
+_∈?_ : ∀ n Γ → n ∈-view Γ
+_     ∈? ε      = no
+zero  ∈? Γ ▹ T  = yes here
+suc n ∈? Γ ▹ T
+  with n ∈? Γ
+... | yes t     = yes (there t)
+... | no        = no
+
+-- ** View on typing
 
 data Dir : dir → Set where
   _∈  : term ⇑        → Dir ⇑
   _∋_ : type → term ⇓ → Dir ⇓
 
-_=?=_ : (A B : type) → Maybe (A ≡ B)
-A =?= B with A ≟ B
-... | yes p = return p
-... | no _ = nothing
+instance
+  DirRaw : ∀ {Γ d T} → Γ ⊢[ d ] T ↪ Dir d
+  ⌊_⌋ {{DirRaw {d = ⇑}}} e    = ⌊ e ⌋ ∈
+  ⌊_⌋ {{DirRaw {d = ⇓}{T}}} e = T ∋ ⌊ e ⌋
 
-_⊢?_∋_ : (Γ : context)(T : type) → term ⇓ → Maybe (Γ ⊢[ ⇓ ] T)
-_⊢?_∈  : (Γ : context) → term ⇑ → Maybe (Σ[ T ∈ type ] Γ ⊢[ ⇑ ] T)
+data _⊢[_]-view_ (Γ : context)(d : dir) : Dir d → Set where
+  yes : ∀ {T} (Δ : Γ ⊢[ d ] T)   → Γ ⊢[ d ]-view ⌊ Δ ⌋
+  no  : ∀ {t}                    → Γ ⊢[ d ]-view t
 
-_⊢?_∋C_ : (Γ : context)(T : type) → can (term ⇓) → Maybe (Γ C⊢[ ⇓ ] T)
+isYes : ∀ {Γ T t} → Γ ⊢[ ⇓ ]-view T ∋ t → Set
+isYes (yes Δ) = ⊤
+isYes no      = ⊥
 
-_!_⊢?_∋#_  : (Γ : context) → (I : type)(O : type) → elim (term ⇓) ⇓ → Maybe (Γ E⊢[ ⇓ ] I ↝ O)
-_!_⊢?_∈#   : (Γ : context) → (I : type) → elim (term ⇓) ⇑ → Maybe (Σ[ O ∈ type ] Γ E⊢[ ⇑ ] I ↝ O)
+lemma : ∀ {Γ T t} → (pf : Γ ⊢[ ⇓ ]-view T ∋ t) → isYes pf → Γ ⊢ T ∋ t
+lemma (yes Δ) tt = well-typed Δ
+lemma no ()
 
-Γ ⊢? T ∋ C t = do Δ ← Γ ⊢? T ∋C t
-                  return (C Δ)
-Γ ⊢? T ∋ inv t =
-  do (T' , Δ) ← (Γ ⊢? t ∈)
-     refl ← (T =?= T')
-     return (inv Δ)
-Γ ⊢? A ∋ t # e =
-  do (T , Δt) ← Γ ⊢? t ∈
-     Δe ← Γ ! T ⊢? A ∋# e
-     return (Δt # Δe)
+-- XXX: Mutually-recursive to please the termination checker
+_⊢?_∋_  : (Γ : context)(T : type)(t : term ⇓) → Γ ⊢[ ⇓ ]-view T ∋ t
+_⊢?_∈   : (Γ : context)(t : term ⇑) → Γ ⊢[ ⇑ ]-view t ∈
 
-Γ ⊢? var k ∈ =
-  do (T , x) ← k ∈? Γ
-     return (T , var x)
-Γ ⊢? n # e ∈ =
-  do (T , Δn) ← Γ ⊢? n ∈
-     (O , Δe) ← Γ ! T ⊢? e ∈#
-     return (O , Δn # Δe)
-Γ ⊢? [ T :∋: t ] ∈ =
-  do Δt ← Γ ⊢? T ∋ t
-     return (-, [ T :∋: Δt by refl ])
+_⊢?_∋C_ : (Γ : context)(T : type)(t : can (term ⇓)) → Γ ⊢[ ⇓ ]-view T ∋ C t
+
+_!_∋_⊢?_∋#_  : (Γ : context)(I : type)(Δt : Γ ⊢[ ⇑ ] I)(T : type)(e : elim (term ⇓) ⇓) → Γ ⊢[ ⇓ ]-view T ∋ (⌊ Δt ⌋ # e)
+_!_∋_⊢?_∈#   : (Γ : context)(T : type)(Δt : Γ ⊢[ ⇑ ] T)(e : elim (term ⇓) ⇑) → Γ ⊢[ ⇑ ]-view (⌊ Δt ⌋ # e) ∈
 
 
-Γ ⊢? unit ∋C tt = 
-  return tt
-Γ ⊢? A * B ∋C pair t₁ t₂ =
-  do Δ₁ ← Γ ⊢? A ∋ t₁
-     Δ₂ ← Γ ⊢? B ∋ t₂
-     return (pair Δ₁ Δ₂)
-Γ ⊢? A ⇒ B ∋C lam b =
-  do Δ ← Γ ▹ A ⊢? B ∋ b
-     return (lam Δ)
-Γ ⊢? nat ∋C ze =
-  return ze
-Γ ⊢? nat ∋C su n =
-  do Δ ← Γ ⊢? nat ∋ n
-     return (su Δ)
-Γ ⊢? A + B ∋C inj₁ t =
-  do Δ ← Γ ⊢? A ∋ t
-     return (inj₁ Δ)
-Γ ⊢? A + B ∋C inj₂ t =
-  do Δ ← Γ ⊢? B ∋ t
-     return (inj₂ Δ)
-Γ ⊢? _ ∋C _ = nothing
+Γ ⊢? T ∋ C t      = Γ ⊢? T ∋C t
+Γ ⊢? T ∋ inv t
+  with Γ ⊢? t ∈
+... | no          = no
+... | yes {T'} Δ
+    with T' ≟ T
+... | yes refl    = yes (inv Δ)
+... | no ¬p       = no
+Γ ⊢? A ∋ t # e
+  with Γ ⊢? t ∈
+... | no          = no
+... | yes {T} Δ   = Γ ! T ∋ Δ ⊢? A ∋# e
 
 
-Γ ! nat ⊢? A ∋# split t₁ t₂ =
-  do Δt₁ ← Γ ▹ A ⊢? A ∋ t₁
-     Δt₂ ← Γ ⊢? A ∋ t₂
-     return (iter Δt₁ Δt₂)
-Γ ! X + Y ⊢? A ∋# split t₁ t₂ =
-  do ΔcX ← Γ ▹ X ⊢? A ∋ t₁
-     ΔcY ← Γ ▹ Y ⊢? A ∋ t₂
-     return (case ΔcX ΔcY)
-Γ ! unit ⊢? A ∋# t    = nothing
-Γ ! T * T₁ ⊢? A ∋# t  = nothing
-Γ ! T ⇒ T₁ ⊢? A ∋# t  = nothing
+Γ ⊢? var k ∈
+  with k ∈? Γ
+... | yes x       = yes (var x)
+... | no          = no
+Γ ⊢? f # e ∈
+  with Γ ⊢? f ∈
+... | yes {T} Δ   = Γ ! T ∋ Δ ⊢? e ∈#
+... | no          = no
+Γ ⊢? [ T :∋: t ] ∈
+  with Γ ⊢? T ∋ t
+... | yes Δ       = yes [ T :∋: Δ by refl ]
+... | no          = no
 
-Γ ! A ⇒ B ⊢? apply s ∈#   =     
-  do Δs ← Γ ⊢? A ∋ s
-     return (_ , apply Δs)
-Γ ! unit ⊢? apply s ∈#    = nothing
-Γ ! nat ⊢? apply s ∈#     = nothing
-Γ ! T * T₁ ⊢? apply s ∈#  = nothing
-Γ ! T + T₁ ⊢? apply s ∈#  = nothing
 
-Γ ! A * B ⊢? fst ∈#  = return (_ , snd)
-Γ ! unit ⊢? fst ∈#   = nothing
-Γ ! nat ⊢? fst ∈#    = nothing
-Γ ! _ + _ ⊢? fst ∈#  = nothing
-Γ ! _ ⇒ _ ⊢? fst ∈#  = nothing
+Γ ⊢? unit ∋C tt  = yes (C tt)
+Γ ⊢? unit ∋C _   = no
 
-Γ ! A * B ⊢? snd ∈#  = return (_ , fst)
-Γ ! unit ⊢? snd ∈#   = nothing
-Γ ! nat ⊢? snd ∈#    = nothing
-Γ ! _ + _ ⊢? snd ∈#  = nothing
-Γ ! _ ⇒ _ ⊢? snd ∈#  = nothing
+Γ ⊢? A * B ∋C pair t₁ t₂
+  with Γ ⊢? A ∋ t₁ | Γ ⊢? B ∋ t₂
+... | yes Δ₁ | yes Δ₂  = no
+... | yes Δ₁ | no      = no
+... | no     | _       = no
+Γ ⊢? A * B ∋C _        = no
+
+Γ ⊢? A ⇒ B ∋C lam b
+  with Γ ▹ A ⊢? B ∋ b
+... | yes Δ      = yes (C (lam Δ))
+... | no         = no
+Γ ⊢? A ⇒ B ∋C _  = no
+
+Γ ⊢? nat ∋C ze  = yes (C ze)
+Γ ⊢? nat ∋C su n
+  with Γ ⊢? nat ∋ n
+... | yes Δ     = yes (C (su Δ))
+... | no        = no
+Γ ⊢? nat ∋C _   = no
+
+Γ ⊢? A + B ∋C inj₁ t
+  with Γ ⊢? A ∋ t
+... | yes Δ      = yes (C (inj₁ Δ))
+... | no         = no
+Γ ⊢? A + B ∋C inj₂ t
+  with Γ ⊢? B ∋ t
+... | yes Δ      = yes (C (inj₂ Δ))
+... | no         = no
+Γ ⊢? A + B ∋C _  = no
+
+
+Γ ! nat ∋ Δt ⊢? A ∋# split fs fz
+  with Γ ▹ A ⊢? A ∋ fs | Γ ⊢? A ∋ fz
+... | yes Δfs | yes Δfz      = yes (Δt # iter Δfs Δfz)
+... | yes Δfs | no           = no
+... | no      | _            = no
+Γ ! X + Y ∋ Δt ⊢? A ∋# split cX cY
+  with (X ∷ Γ) ⊢? A ∋ cX | (Y ∷ Γ) ⊢? A ∋ cY
+... | yes ΔcX | yes ΔcY      = yes (Δt # case ΔcX ΔcY)
+... | yes ΔcX | no           = no
+... | no      | _            = no
+Γ ! _ ∋ _ ⊢? _ ∋# split _ _  = no
+
+Γ ! A ⇒ B ∋ Δf ⊢? apply s ∈#
+  with Γ ⊢? A ∋ s
+... | yes Δs             = yes (Δf # apply Δs)
+... | no                 = no
+Γ ! _ ∋ _ ⊢? apply _ ∈#  = no
+
+Γ ! A * B ∋ Δ ⊢? fst ∈#  = yes (Δ # fst)
+Γ ! _ ∋ _ ⊢? fst ∈#      = no
+
+Γ ! A * B ∋ Δ ⊢? snd ∈#  = yes (Δ # snd)
+Γ ! _ ∋ _ ⊢? snd ∈#      = no
 
 -- ** Tests
 
-nat∋t1 : [] ⊢[ ⇓ ] nat
-nat∋t1 = to-witness-T ([] ⊢? nat ∋ t1) tt
+nat∋t1' : [] ⊢ nat ∋ t1
+nat∋t1' = lemma ([] ⊢? nat ∋ t1) tt
 
 T1 : type
 T1 = nat ⇒ (unit + unit)
@@ -386,9 +459,8 @@ T1 = nat ⇒ (unit + unit)
 T2 : type
 T2 = (nat + unit) ⇒ (unit + unit)
 
-T1∋t2 : [] ⊢[ ⇓ ] T1
-T1∋t2 = to-witness-T ([] ⊢? T1 ∋ t2) tt
+T1∋t2 : [] ⊢ T1 ∋ t2
+T1∋t2 = lemma ([] ⊢? T1 ∋ t2) tt
 
-T2∋t2 : [] ⊢[ ⇓ ] T2
-T2∋t2 = to-witness-T ([] ⊢? T2 ∋ t2) tt
-
+T2∋t2 : [] ⊢ T2 ∋ t2
+T2∋t2 = lemma ([] ⊢? T2 ∋ t2) tt
