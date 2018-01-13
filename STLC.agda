@@ -1,10 +1,10 @@
 -- Type-checker for the simply-typed lambda calculus
 --
--- Where we factorize canonical and elimination forms in terms
+-- Where we use a type family to encode the type system and the
+-- typechecker produces such typing witnesses
 
 open import Data.Empty
 open import Data.Unit hiding (_≟_)
-open import Data.Bool hiding (_≟_) renaming (true to True ; false to False)
 open import Data.Maybe
 open import Data.Maybe.Categorical renaming (monad to monadMaybe)
 open import Data.List hiding ([_])
@@ -29,6 +29,9 @@ infix 20 _∈?_
 infixr 30 _+_
 infixr 35 _*_
 infixr 40 _⇒_
+infix 50 _∈_
+infix 50 _∈
+infix 50 _∋_
 infixl 150 _▹_
 
 -- * Types
@@ -41,13 +44,47 @@ bool : type
 bool = unit + unit
 
 
-_≟_ : type → type → Bool
-unit      ≟ unit       = True
-nat       ≟ nat        = True
-(A₁ + B₁) ≟ (A₂ + B₂)  = A₁ ≟ A₂ ∧ B₁ ≟ B₂
-(A₁ ⇒ B₁) ≟ (A₂ ⇒ B₂)  = A₁ ≟ A₂ ∧ B₁ ≟ B₂
-(A₁ * B₁) ≟ (A₂ * B₂)  = A₁ ≟ A₂ ∧ B₁ ≟ B₂
-_         ≟ _          = False
+-- TODO: automate this definition using reflection of Agda in Agda
+-- see https://github.com/UlfNorell/agda-prelude/blob/master/src/Tactic/Deriving/Eq.agda
+_≟_ : Decidable {A = type} _≡_
+unit      ≟ unit          = yes refl
+nat       ≟ nat           = yes refl
+(A₁ + B₁) ≟ (A₂ + B₂)
+  with A₁ ≟ A₂ | B₁ ≟ B₂
+... | yes refl | yes refl = yes refl
+... | yes refl | no ¬p    = no (λ { refl → ¬p refl })
+... | no ¬p | _           = no (λ { refl → ¬p refl })
+(A₁ ⇒ B₁) ≟ (A₂ ⇒ B₂)
+  with A₁ ≟ A₂ | B₁ ≟ B₂
+... | yes refl | yes refl = yes refl
+... | yes _    | no ¬p    = no λ { refl → ¬p refl }
+... | no ¬p    | _        = no λ { refl → ¬p refl }
+(A₁ * B₁) ≟ (A₂ * B₂)
+  with A₁ ≟ A₂ | B₁ ≟ B₂
+... | yes refl | yes refl = yes refl
+... | yes _    | no ¬p    = no λ { refl → ¬p refl }
+... | no ¬p    | q₂       = no λ { refl → ¬p refl }
+unit      ≟ (_ ⇒ _)       = no λ {()}
+unit      ≟ (_ * _)       = no λ {()}
+unit      ≟ nat           = no λ {()}
+unit      ≟ (_ + _)       = no λ {()}
+nat       ≟ (_ ⇒ _)       = no λ {()}
+nat       ≟ (_ * _)       = no λ {()}
+nat       ≟ unit          = no λ {()}
+nat       ≟ (_ + _)       = no λ {()}
+(_ + _)   ≟ (_ ⇒ _)       = no λ {()}
+(_ + _)   ≟ (_ * _)       = no λ {()}
+(_ + _)   ≟ nat           = no λ {()}
+(_ + _)   ≟ unit          = no λ {()}
+(_ ⇒ _)   ≟ unit          = no λ {()}
+(_ ⇒ _)   ≟ nat           = no λ {()}
+(_ ⇒ _)   ≟ (_ * _)       = no λ {()}
+(_ ⇒ _)   ≟ (_ + _)       = no λ {()}
+(_ * _)   ≟ unit          = no λ {()}
+(_ * _)   ≟ nat           = no λ {()}
+(_ * _)   ≟ (_ ⇒ _)       = no λ {()}
+(_ * _)   ≟ (_ + _)       = no λ {()}
+
 
 -- * Syntax of terms
 
@@ -96,87 +133,252 @@ t1 = inv ([ nat ⇒ nat :∋: Clam {- x -} (inv (var {- x -} 0)) ] # apply (Csu 
 t2 : term ⇓
 t2 = Clam {-x-} (var {- x -} 0 # split true false)
 
--- * Type-checking
+-- * Type system
 
 context = List type
 
 pattern _▹_ Γ T = T ∷ Γ
 pattern ε       = []
 
-_∈?_ : ℕ → context → Maybe type
-_     ∈? ε      = nothing
-zero  ∈? Γ ▹ T  = return T
-suc n ∈? Γ ▹ T  = n ∈? Γ
+data _∈_ (T : type) : context → Set where
+  here : ∀ {Γ} →
 
-_=?=_ : type → type → Maybe ⊤
-A =?= B = if A ≟ B then return tt else nothing
+      ---------
+      T ∈ Γ ▹ T
 
--- XXX: Mutually-recursive to please the termination checker
-_⊢?_∋_     : context → type → term ⇓ → Maybe ⊤
-_⊢?_∈      : context → term ⇑ → Maybe type
-_⊢?_∋C_    : context → type → can (term ⇓) → Maybe ⊤
-_!_⊢?_∋#_  : context → type → type → elim (term ⇓) ⇓ → Maybe ⊤
-_!_⊢?_∈#   : context → type → elim (term ⇓) ⇑ → Maybe type
+  there : ∀ {Γ T'} →
 
-Γ ⊢? unit ∋ Ctt = return tt
-Γ ⊢? T ∋ C t = Γ ⊢? T ∋C t
-Γ ⊢? T ∋ inv t =
-  do T' ← (Γ ⊢? t ∈)
-     T =?= T'
-Γ ⊢? A ∋ f # e =
-  do T ← Γ ⊢? f ∈
-     Γ ! T ⊢? A ∋# e
+      T ∈ Γ
+    → ----------
+      T ∈ Γ ▹ T'
 
-Γ ⊢? var k ∈ = k ∈? Γ
-Γ ⊢? f # e ∈ =
-  do T ← Γ ⊢? f ∈
-     Γ ! T ⊢? e ∈#
-Γ ⊢? [ T :∋: t ] ∈ =
-  do _ ← Γ ⊢? T ∋ t
-     return T
+mutual
 
-Γ ⊢? A * B ∋C pair t₁ t₂ =
-  do _ ← Γ ⊢? A ∋ t₁
-     _ ← Γ ⊢? B ∋ t₂
-     return tt
-Γ ⊢? A ⇒ B ∋C lam b =
-  do _ ← Γ ▹ A ⊢? B ∋ b
-     return tt
-Γ ⊢? nat ∋C ze =
-  return tt
-Γ ⊢? nat ∋C su n =
-  do _ ← Γ ⊢? nat ∋ n
-     return tt
-Γ ⊢? A + B ∋C inj₁ t =
-  do _ ← Γ ⊢? A ∋ t
-     return tt
-Γ ⊢? A + B ∋C inj₂ t =
-  do _ ← Γ ⊢? B ∋ t
-     return tt
-Γ ⊢? T ∋C t = nothing
+  data _C⊢[_]_ : context → dir → type → Set where
+    lam : ∀ {Γ A B} →
 
-Γ ! A ⇒ B ⊢? apply s ∈# =
-  do _ ← Γ ⊢? A ∋ s
-     return B
-Γ ! A * B ⊢? fst ∈# =
-  return A
-Γ ! A * B ⊢? snd ∈# =
-  return B
-_ ! _ ⊢? _ ∈# = nothing
-Γ ! nat ⊢? A ∋# split c₁ c₂ =
-  do _ ← Γ ▹ A ⊢? A ∋ c₁
-     _ ← Γ ⊢? A ∋ c₂
-     return tt
-Γ ! X + Y ⊢? A ∋# split c₁ c₂ =
-  do _ ← Γ ▹ X ⊢? A ∋ c₁
-     _ ← Γ ▹ Y ⊢? A ∋ c₂
-     return tt
-Γ ! _ ⊢? _ ∋# _ = nothing
+        Γ ▹ A ⊢[ ⇓ ] B
+      → ---------------
+        Γ C⊢[ ⇓ ] A ⇒ B
+
+    tt : ∀ {Γ} →
+
+        --------------
+        Γ C⊢[ ⇓ ] unit
+
+    ze : ∀ {Γ} →
+
+        -------------
+        Γ C⊢[ ⇓ ] nat
+
+    su : ∀ {Γ} →
+
+        Γ ⊢[ ⇓ ] nat
+      → -------------
+        Γ C⊢[ ⇓ ] nat
+
+    inj₁ : ∀ {Γ A B} →
+
+        Γ ⊢[ ⇓ ] A
+      → ---------------
+        Γ C⊢[ ⇓ ] A + B
+
+    inj₂ : ∀ {Γ A B} →
+
+        Γ ⊢[ ⇓ ] B
+      → ---------------
+        Γ C⊢[ ⇓ ] A + B
+
+    pair : ∀ {Γ A B} →
+
+        Γ ⊢[ ⇓ ] A →
+        Γ ⊢[ ⇓ ] B
+      → ---------------
+        Γ C⊢[ ⇓ ] A * B
+
+  data _E⊢[_]_↝_ : context → dir → type → type → Set where
+    apply : ∀ {Γ A B} →
+
+        Γ ⊢[ ⇓ ] A
+      → -------------------
+        Γ E⊢[ ⇑ ] A ⇒ B ↝ B
+
+    fst : ∀ {Γ A B} →
+
+        -------------------
+        Γ E⊢[ ⇑ ] A * B ↝ A
+
+    snd : ∀ {Γ A B} →
+
+        -------------------
+        Γ E⊢[ ⇑ ] A * B ↝ B
+
+    iter : ∀ {Γ A} →
+
+        Γ ▹ A ⊢[ ⇓ ] A →
+        Γ ⊢[ ⇓ ] A
+      → -----------------
+        Γ E⊢[ ⇓ ] nat ↝ A
+
+    case : ∀ {Γ A B C} →
+
+        Γ ▹ A ⊢[ ⇓ ] C →
+        Γ ▹ B ⊢[ ⇓ ] C
+      → -------------------
+        Γ E⊢[ ⇓ ] A + B ↝ C
+
+  data _⊢[_]_ : context → dir → type → Set where
+
+    C : ∀ {Γ d T} →
+
+        Γ C⊢[ d ] T
+      → -----------
+        Γ ⊢[ d ] T
+
+    inv : ∀ {Γ T} →
+
+        Γ ⊢[ ⇑ ] T
+      → ----------
+        Γ ⊢[ ⇓ ] T
+
+    var : ∀ {Γ T} →
+
+        T ∈ Γ
+      → ----------
+        Γ ⊢[ ⇑ ] T
+
+    _#_ : ∀ {Γ d I O} →
+
+        Γ ⊢[ ⇑ ] I →
+        Γ E⊢[ d ] I ↝ O
+      → ---------------
+        Γ ⊢[ d ] O
+
+    [_:∋:_by_] : ∀ {Γ A} →
+
+        (B : type) → Γ ⊢[ ⇓ ] B → A ≡ B
+      → -------------------------------
+        Γ ⊢[ ⇑ ] A
 
 -- ** Tests
 
-nat∋t1 : [] ⊢? nat ∋ t1 ≡ just tt
-nat∋t1 = refl
+⊢true : [] ⊢[ ⇓ ] bool
+⊢true = C (inj₁ (C tt))
+
+⊢false : [] ⊢[ ⇓ ] bool
+⊢false = C (inj₂ (C tt))
+
+⊢t1 : [] ⊢[ ⇓ ] nat
+⊢t1 = inv ([ (nat ⇒ nat) :∋: (C (lam (inv (var here)))) by refl ]
+          # (apply (C (su (C (su (C ze)))))))
+
+-- * Type-checking
+
+_∈?_ : ℕ → (Γ : context) → Maybe (Σ[ T ∈ type ] T ∈ Γ)
+_     ∈? ε      = nothing
+zero  ∈? Γ ▹ T  = return (T , here)
+suc n ∈? Γ ▹ T  = do (T' , t) ← n ∈? Γ
+                     return (T' , there t)
+
+data Dir : dir → Set where
+  _∈  : term ⇑        → Dir ⇑
+  _∋_ : type → term ⇓ → Dir ⇓
+
+_=?=_ : (A B : type) → Maybe (A ≡ B)
+A =?= B with A ≟ B
+... | yes p = return p
+... | no _ = nothing
+
+_⊢?_∋_ : (Γ : context)(T : type) → term ⇓ → Maybe (Γ ⊢[ ⇓ ] T)
+_⊢?_∈  : (Γ : context) → term ⇑ → Maybe (Σ[ T ∈ type ] Γ ⊢[ ⇑ ] T)
+
+_⊢?_∋C_ : (Γ : context)(T : type) → can (term ⇓) → Maybe (Γ C⊢[ ⇓ ] T)
+
+_!_⊢?_∋#_  : (Γ : context) → (I : type)(O : type) → elim (term ⇓) ⇓ → Maybe (Γ E⊢[ ⇓ ] I ↝ O)
+_!_⊢?_∈#   : (Γ : context) → (I : type) → elim (term ⇓) ⇑ → Maybe (Σ[ O ∈ type ] Γ E⊢[ ⇑ ] I ↝ O)
+
+Γ ⊢? T ∋ C t = do Δ ← Γ ⊢? T ∋C t
+                  return (C Δ)
+Γ ⊢? T ∋ inv t =
+  do (T' , Δ) ← (Γ ⊢? t ∈)
+     refl ← (T =?= T')
+     return (inv Δ)
+Γ ⊢? A ∋ t # e =
+  do (T , Δt) ← Γ ⊢? t ∈
+     Δe ← Γ ! T ⊢? A ∋# e
+     return (Δt # Δe)
+
+Γ ⊢? var k ∈ =
+  do (T , x) ← k ∈? Γ
+     return (T , var x)
+Γ ⊢? n # e ∈ =
+  do (T , Δn) ← Γ ⊢? n ∈
+     (O , Δe) ← Γ ! T ⊢? e ∈#
+     return (O , Δn # Δe)
+Γ ⊢? [ T :∋: t ] ∈ =
+  do Δt ← Γ ⊢? T ∋ t
+     return (-, [ T :∋: Δt by refl ])
+
+
+Γ ⊢? unit ∋C tt = 
+  return tt
+Γ ⊢? A * B ∋C pair t₁ t₂ =
+  do Δ₁ ← Γ ⊢? A ∋ t₁
+     Δ₂ ← Γ ⊢? B ∋ t₂
+     return (pair Δ₁ Δ₂)
+Γ ⊢? A ⇒ B ∋C lam b =
+  do Δ ← Γ ▹ A ⊢? B ∋ b
+     return (lam Δ)
+Γ ⊢? nat ∋C ze =
+  return ze
+Γ ⊢? nat ∋C su n =
+  do Δ ← Γ ⊢? nat ∋ n
+     return (su Δ)
+Γ ⊢? A + B ∋C inj₁ t =
+  do Δ ← Γ ⊢? A ∋ t
+     return (inj₁ Δ)
+Γ ⊢? A + B ∋C inj₂ t =
+  do Δ ← Γ ⊢? B ∋ t
+     return (inj₂ Δ)
+Γ ⊢? _ ∋C _ = nothing
+
+
+Γ ! nat ⊢? A ∋# split t₁ t₂ =
+  do Δt₁ ← Γ ▹ A ⊢? A ∋ t₁
+     Δt₂ ← Γ ⊢? A ∋ t₂
+     return (iter Δt₁ Δt₂)
+Γ ! X + Y ⊢? A ∋# split t₁ t₂ =
+  do ΔcX ← Γ ▹ X ⊢? A ∋ t₁
+     ΔcY ← Γ ▹ Y ⊢? A ∋ t₂
+     return (case ΔcX ΔcY)
+Γ ! unit ⊢? A ∋# t    = nothing
+Γ ! T * T₁ ⊢? A ∋# t  = nothing
+Γ ! T ⇒ T₁ ⊢? A ∋# t  = nothing
+
+Γ ! A ⇒ B ⊢? apply s ∈#   =     
+  do Δs ← Γ ⊢? A ∋ s
+     return (_ , apply Δs)
+Γ ! unit ⊢? apply s ∈#    = nothing
+Γ ! nat ⊢? apply s ∈#     = nothing
+Γ ! T * T₁ ⊢? apply s ∈#  = nothing
+Γ ! T + T₁ ⊢? apply s ∈#  = nothing
+
+Γ ! A * B ⊢? fst ∈#  = return (_ , snd)
+Γ ! unit ⊢? fst ∈#   = nothing
+Γ ! nat ⊢? fst ∈#    = nothing
+Γ ! _ + _ ⊢? fst ∈#  = nothing
+Γ ! _ ⇒ _ ⊢? fst ∈#  = nothing
+
+Γ ! A * B ⊢? snd ∈#  = return (_ , fst)
+Γ ! unit ⊢? snd ∈#   = nothing
+Γ ! nat ⊢? snd ∈#    = nothing
+Γ ! _ + _ ⊢? snd ∈#  = nothing
+Γ ! _ ⇒ _ ⊢? snd ∈#  = nothing
+
+-- ** Tests
+
+nat∋t1 : [] ⊢[ ⇓ ] nat
+nat∋t1 = to-witness-T ([] ⊢? nat ∋ t1) tt
 
 T1 : type
 T1 = nat ⇒ (unit + unit)
@@ -184,8 +386,9 @@ T1 = nat ⇒ (unit + unit)
 T2 : type
 T2 = (nat + unit) ⇒ (unit + unit)
 
-T1∋t2 : [] ⊢? T1 ∋ t2 ≡ just tt
-T1∋t2 = refl
+T1∋t2 : [] ⊢[ ⇓ ] T1
+T1∋t2 = to-witness-T ([] ⊢? T1 ∋ t2) tt
 
-T2∋t2 : [] ⊢? T2 ∋ t2 ≡ just tt
-T2∋t2 = refl
+T2∋t2 : [] ⊢[ ⇓ ] T2
+T2∋t2 = to-witness-T ([] ⊢? T2 ∋ t2) tt
+
